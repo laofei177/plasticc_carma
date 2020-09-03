@@ -199,7 +199,7 @@ def dho_log_param_init():
     return [log_a1, log_a2, log_b0, log_b1]
 
 
-def dho_fit(lc_df, de=True, debug=False, plot=False, bounds=None):
+def dho_fit(lc_df, debug=False, plot=False, bounds=None):
 
     best_fit = np.zeros((4, 6))
 
