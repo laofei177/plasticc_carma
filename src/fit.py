@@ -24,7 +24,7 @@ def neg_ll(params, y, yerr, gp):
     lap = 0
 
     while run:
-        if lap > 50:
+        if lap > 10:
             return -np.inf
 
         lap += 1
@@ -48,24 +48,35 @@ def neg_ll(params, y, yerr, gp):
 vec_neg_ll = np.vectorize(neg_ll, excluded=[1, 2, 3], signature="(n)->()")
 
 
-def lc_fit_data(lc_df, de=True, debug=False, plot=False, bounds=None):
+def drw_log_param_init(std):
+    """
+    Randomly generate DRW parameters
 
-    best_amp = np.zeros(6)
-    best_tau = np.zeros(6)
+    Args:
+        std (float): The std of the LC to fit.
+
+    Returns:
+        list: The generated DRW parameters in natural log.
+    """
+
+    init_tau = np.exp(np.random.uniform(0, 6, 1)[0])
+    init_amp = np.random.uniform(0, 4 * std, 1)[0]
+
+    return np.log([init_amp, init_tau])
+
+
+def drw_fit(lc_df, de=True, debug=False, plot=False, bounds=None):
+
+    best_fit = np.zeros((2, 6))
 
     # fail_num = 0
     lc_df = lc_df.copy()
     std = np.std(lc_df.flux.values)
 
     if bounds is not None:
-        bounds = bounds
+        first_bounds = bounds
     else:
-        bounds = [(-4, np.log(4 * std)), (-4, 10)]
-
-    # initialize parameter and kernel
-    init_tau = np.exp(np.random.uniform(0, 6, 1)[0])
-    init_amp = np.random.uniform(0, 4 * std, 1)[0]
-    kernel = DRW_term(np.log(init_amp), np.log(init_tau))
+        first_bounds = [(-4, np.log(4 * std)), (-4, 10)]
 
     # loop through lc in each passband
     for band in range(6):
@@ -77,33 +88,49 @@ def lc_fit_data(lc_df, de=True, debug=False, plot=False, bounds=None):
             yerr = lc_band.flux_err.values
 
             rerun = True  # dynamic control of bounds
-            counter = -1
+            counter = 0
+            bounds = first_bounds
+            jac_log_rec = 10
+
+            # initialize parameter and kernel
+            kernel = DRW_term(*drw_log_param_init(std))
             gp = GP(kernel, mean=np.mean(y))
             gp.compute(t, yerr)
 
             if de:
                 # set bound based on LC std for amp
-                while rerun and (counter < 10):
+                while rerun and (counter < 5):
                     counter += 1
                     r = differential_evolution(
-                        neg_ll, bounds=bounds, args=(y, yerr, gp)
+                        neg_ll, bounds=bounds, args=(y, yerr, gp), maxiter=200
                     )
-                    if 'jac' in r.keys():
-                        jac_log = np.log10(np.dot(r.jac, r.jac)+1e-8)
-                        
-                        if jac_log > 0:
-                            bounds = [(x[0] * 1.5, x[1] * 1.5) for x in bounds]
-                        else:
+
+                    if r.success:
+                        best_fit[:, band] = np.exp(r.x)
+
+                        if "jac" not in r.keys():
                             rerun = False
+                        else:
+                            jac_log = np.log10(np.dot(r.jac, r.jac) + 1e-8)
+
+                            # if positive jac, then increase bounds
+                            if jac_log > 0:
+                                bounds = [(x[0] - 1, x[1] + 1) for x in bounds]
+                            else:
+                                rerun = False
+
+                            # update best-fit if smaller jac found
+                            if jac_log < jac_log_rec:
+                                jac_log_rec = jac_log
+                                best_fit[:, band] = np.exp(r.x)
                     else:
-                        rerun = False
-                        
+                        bounds = [(x[0] - 1, x[1] + 1) for x in bounds]
+                        gp.set_parameter_vector(drw_log_param_init(std))
 
             else:
                 initial_params = gp.get_parameter_vector()
 
-                while rerun and (counter < 10):
-                    print(counter)
+                while rerun and (counter < 5):
                     counter += 1
                     r = minimize(
                         neg_ll,
@@ -112,17 +139,30 @@ def lc_fit_data(lc_df, de=True, debug=False, plot=False, bounds=None):
                         bounds=bounds,
                         args=(y, yerr, gp),
                     )
-                    if 'jac' in r.keys():
-                        jac_log = np.log10(np.dot(r.jac, r.jac)+1e-8)
-                        if jac_log > 0:
-                            bounds = [(x[0] * 1.5, x[1] * 1.5) for x in bounds]
-                        else:
-                            rerun = False
-                    else:
-                        rerun = False
+                    if r.success:
+                        best_fit[:, band] = np.exp(r.x)
 
-            best_amp[band] = np.exp(r.x)[0]
-            best_tau[band] = np.exp(r.x)[1]
+                        if "jac" not in r.keys():
+                            rerun = False
+                        else:
+                            jac_log = np.log10(np.dot(r.jac, r.jac) + 1e-8)
+
+                            # if positive jac, then increase bounds
+                            if jac_log > 0:
+                                bounds = [(x[0] - 1, x[1] + 1) for x in bounds]
+                            else:
+                                rerun = False
+
+                            # update best-fit if smaller jac found
+                            if jac_log < jac_log_rec:
+                                jac_log_rec = jac_log
+                                best_fit[:, band] = np.exp(r.x)
+                    else:
+                        bounds = [(x[0] - 1, x[1] + 1) for x in bounds]
+                        gp.set_parameter_vector(drw_log_param_init(std))
+
+            if not r.success:
+                best_fit[:, band] = np.nan
 
         except Exception as e:
             print(r)
@@ -130,8 +170,7 @@ def lc_fit_data(lc_df, de=True, debug=False, plot=False, bounds=None):
             print(
                 f"Exception at object_id: {lc_df.object_id.values[0]}, passband: {band}"
             )
-            best_amp[band] = np.nan
-            best_tau[band] = np.nan
+            best_fit[:, band] = np.nan
             # fail_num += 1
 
         # Below code is used to visualize if stuck in local minima
@@ -141,7 +180,107 @@ def lc_fit_data(lc_df, de=True, debug=False, plot=False, bounds=None):
         if plot:
             plot_drw_ll(t, y, yerr, np.exp(r.x), gp, vec_neg_ll)
 
-    return np.concatenate([[lc_df.object_id.values[0]], best_amp, best_tau])
+    return np.concatenate([[lc_df.object_id.values[0]], best_fit.flatten()])
+
+
+def dho_log_param_init():
+    """
+    Randomly generate DHO parameters
+
+    Returns:
+        list: The generated DHO parameters in natural log.
+    """
+
+    log_a1 = np.random.uniform(-10, 1, 1)[0]
+    log_a2 = np.random.uniform(-14, -3, 1)[0]
+    log_b0 = np.random.uniform(-10, -5, 1)[0]
+    log_b1 = np.random.uniform(-10, -5, 1)[0]
+
+    return [log_a1, log_a2, log_b0, log_b1]
+
+
+def dho_fit(lc_df, de=True, debug=False, plot=False, bounds=None):
+
+    best_fit = np.zeros((4, 6))
+
+    # fail_num = 0
+    lc_df = lc_df.copy()
+    # std = np.std(lc_df.flux.values)
+
+    if bounds is not None:
+        first_bounds = bounds
+    else:
+        first_bounds = [(-10, 7), (-14, 7), (-12, -2), (-11, -2)]
+
+    # loop through lc in each passband
+    for band in range(6):
+
+        try:
+            lc_band = lc_df[lc_df.passband == band].copy()
+            t = lc_band.mjd.values - lc_band.mjd.min()
+            y = lc_band.flux.values
+            yerr = lc_band.flux_err.values
+
+            rerun = True  # dynamic control of bounds
+            counter = 0
+            bounds = first_bounds
+            jac_log_rec = 10
+
+            # initialize parameter, kernel and GP
+            kernel = DHO_term(*dho_log_param_init())
+            gp = GP(kernel, mean=np.mean(y))
+            gp.compute(t, yerr)
+
+            # set bound based on LC std for amp
+            while rerun and (counter < 5):
+                counter += 1
+                r = differential_evolution(
+                    neg_ll, bounds=bounds, args=(y, yerr, gp), maxiter=200
+                )
+
+                if r.success:
+                    best_fit[:, band] = np.exp(r.x)
+
+                    if "jac" not in r.keys():
+                        rerun = False
+                    else:
+                        jac_log = np.log10(np.dot(r.jac, r.jac) + 1e-8)
+
+                        # if positive jac, then increase bounds
+                        if jac_log > 0:
+                            bounds = [(x[0] - 1, x[1] + 1) for x in bounds]
+                        else:
+                            rerun = False
+
+                        # update best-fit if smaller jac found
+                        if jac_log < jac_log_rec:
+                            jac_log_rec = jac_log
+                            best_fit[:, band] = np.exp(r.x)
+                else:
+                    bounds = [(x[0] - 1, x[1] + 1) for x in bounds]
+                    gp.set_parameter_vector(dho_log_param_init())
+
+            # if no success found, set best to nan
+            if not r.success:
+                best_fit[:, band] = np.nan
+
+        except Exception as e:
+            print(r)
+            print(e)
+            print(
+                f"Exception at object_id: {lc_df.object_id.values[0]}, passband: {band}"
+            )
+            best_fit[:, band] = np.nan
+            # fail_num += 1
+
+        # Below code is used to visualize if stuck in local minima
+        if debug:
+            print(r)
+
+        if plot:
+            plot_dho_ll(t, y, yerr, np.exp(r.x), gp, vec_neg_ll)
+
+    return np.concatenate([[lc_df.object_id.values[0]], best_fit.flatten()])
 
 
 def plot_lc(lc_df, log=False, meta=None, **kwargs):
@@ -170,5 +309,5 @@ def plot_lc(lc_df, log=False, meta=None, **kwargs):
     plt.legend(fontsize=12)
     plt.xlabel("Time (day)")
     plt.ylabel(f"Flux (arb. unit)")
-    plt.title(f"LC for object: {lc_df.object_id[0]}; Log: {log}", fontsize=18)
+    plt.title(f"LC for object: {lc_df.object_id.values[0]}; Log: {log}", fontsize=18)
 

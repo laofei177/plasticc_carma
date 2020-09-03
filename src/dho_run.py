@@ -35,9 +35,13 @@ if __name__ == "__main__":
         # create col names
         cols = ["object_id"]
         for band in bands:
-            cols.append(f"drw_amp_{band}")
+            cols.append(f"a1_{band}")
         for band in bands:
-            cols.append(f"drw_tau_{band}")
+            cols.append(f"a2_{band}")
+        for band in bands:
+            cols.append(f"b0_{band}")
+        for band in bands:
+            cols.append(f"b1_{band}")
 
         chunk_size = 10000
 
@@ -48,13 +52,13 @@ if __name__ == "__main__":
             for k, key in enumerate(
                 gps_keys[j * chunk_size : j * chunk_size + chunk_size]
             ):
-                lc = lc_gps.get_group(key).copy()
+                lc = lc_gps.get_group(key)
 
                 # remove large errors
                 max_err = np.percentile(lc.flux_err, 99)
                 lc = lc[lc.flux_err < max_err]
 
-                r = client.submit(drw_fit, lc)
+                r = client.submit(dho_fit, lc)
                 total.append(r)
 
             # combine result returned by dask and save
