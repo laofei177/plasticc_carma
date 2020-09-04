@@ -316,7 +316,7 @@ def carma_fit(lc_df, p, q, de=True, debug=False, plot=False, bounds=None):
     if bounds is not None:
         first_bounds = bounds
     else:
-        first_bounds = [(-10, 1)] * int(p + q + 1)
+        first_bounds = [(-10, 5)] * int(p + q + 1)
 
     # loop through lc in each passband
     for band in range(6):
